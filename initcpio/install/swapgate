@@ -49,12 +49,12 @@ build() {
     add_module aes_ti
 
     # SIMD helpers (sometimes required when AES is modular)
-    add_module crypto_simd
+    add_if_avail crypto_simd
     add_module cryptd
 
     # hashes / checksum (dm-crypt likes to have crc32c; pick generic if intel not present)
     add_if_avail crc32c-intel
-    add_module crc32c_generic
+    add_if_avail crc32c_generic
 
     # Autodetect strips boot drivers
     if bootfstype="$(findmnt -suno fstype -T '/boot')"; then
