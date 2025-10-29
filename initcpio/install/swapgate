@@ -1,0 +1,90 @@
+#!/bin/sh
+
+build() {
+    local bootfstype
+
+    # Copied from autodetect hook install script, except just add modules directly
+    add_if_avail() {
+        local r='' resolved=()
+
+        # treat this as an alias, since ext3 might be aliased to ext4. also, as
+        # of linux 3.9, we can find any filesystem by the alias "fs-$name"
+        # rather than having to guess at the corresponding module name.
+        mapfile -t resolved < <(modprobe -S "$KERNELVERSION" -qaR {fs-,}"$1")
+
+        for r in "${resolved[@]}"; do
+            add_module "$r"
+        done
+    }
+
+    add_runscript
+
+    # Pull in tools we rely on
+    add_binary /usr/bin/cryptsetup
+    add_binary /usr/bin/lsblk
+    add_binary /usr/bin/mount
+    add_binary /usr/bin/umount
+    add_binary /usr/bin/dd
+    add_binary /usr/bin/mkswap
+    add_binary /usr/bin/swapon
+    add_binary /usr/bin/mv
+    add_binary /usr/bin/sync
+    add_binary /usr/bin/openssl
+
+    # Not needed, just added for convenience
+    add_binary /usr/bin/blkid
+    add_binary /usr/bin/swapoff
+
+    # --- kernel modules (with graceful fallbacks) ---
+    # core device-mapper + dm-crypt target
+    add_module dm-mod
+    add_module dm-crypt
+
+    # crypto transforms needed by dm-crypt
+    add_module xts
+    add_module cbc
+
+    # AES: prefer hardware, then software; if kernel has it built-in, these will just no-op
+    add_if_avail aesni-intel
+    add_module aes_ti
+
+    # SIMD helpers (sometimes required when AES is modular)
+    add_module crypto_simd
+    add_module cryptd
+
+    # hashes / checksum (dm-crypt likes to have crc32c; pick generic if intel not present)
+    add_if_avail crc32c-intel
+    add_module crc32c_generic
+
+    # Autodetect strips boot drivers
+    if bootfstype="$(findmnt -suno fstype -T '/boot')"; then
+        if [[ "${bootfstype}" == "overlay" ]]; then
+            warning "cannot detect type of overlayfs boot filesystem"
+            # fs_autodetect_failed is used by other hooks called after this one
+            # shellcheck disable=SC2034
+            fs_autodetect_failed=1
+        else
+            add_if_avail "$bootfstype"
+        fi
+    else
+        error "failed to detect boot filesystem"
+        # fs_autodetect_failed is used by other hooks called after this one
+        # shellcheck disable=SC2034
+        fs_autodetect_failed=1
+    fi
+
+    # Config into initramfs root
+    add_file /etc/swapgate.conf /swapgate.conf
+}
+
+help() {
+cat <<'EOF'
+swapgate:
+  Conditional LUKS-encrypted swap gate with rsa-wrapped per-boot key.
+  - If /boot/resume.cookie exists: prompt to decrypt rsa identity, unwrap K, open swap for resume.
+  - Else: rotate K, store Enc(K) on ESP, LUKS-format + swapon (no prompt).
+
+  Configuration file: /etc/swapgate.conf
+EOF
+}
+

@@ -1,0 +1,13 @@
+# Swap and ESP partitions (PARTUUIDs are kernel-native and stable)
+SWAP_PARTUUID="3b724cd3-7416-47fc-9180-2f54e97d11a0"
+ESP_PARTUUID="3fb17397-db36-4102-827c-b49c22313e29"
+
+# Paths on ESP (/boot) used by the mechanism
+COOKIE_PATH="/resume.cookie"
+PUBKEY_PATH="/rsa/identity.pub"
+ID_ENC_PATH="/rsa/identity.key.enc"
+ENCK_PATH="/rsa/swap.key.enc"
+
+# Name of the dev mapper device
+MAP_NAME=swap
+

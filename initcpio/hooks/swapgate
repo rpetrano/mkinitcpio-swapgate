@@ -1,0 +1,180 @@
+#!/bin/sh
+
+# shellcheck shell=sh
+run_hook() {
+    # Load config
+    local SWAP_PARTUUID ESP_PARTUUID COOKIE_PATH PUBKEY_PATH ID_ENC_PATH ENCK_PATH MAP_NAME
+    local DANGEROUS_SKIP_SAFETY_CHECKS_IM_NOT_A_DUMMY
+    local ALLOW_NONSWAP_PARTTYPE
+    . /swapgate.conf
+
+    local BOOT_MNT="/run/boot-esp"
+    mkdir -p "$BOOT_MNT"
+
+    # Mount ESP read-only by PARTUUID to a stable path
+    local BOOT_DEV="/dev/disk/by-partuuid/${ESP_PARTUUID}"
+    if ! mount -t vfat -o ro "$BOOT_DEV" "$BOOT_MNT" 2>/dev/null; then
+        echo "[swapgate] WARN: Cannot mount ESP ${ESP_PARTUUID}."
+        exec sh -i </dev/console >/dev/console 2>&1
+        return 0
+    fi
+
+    local COOKIE="${BOOT_MNT}${COOKIE_PATH}"
+    local PUBKEY="${BOOT_MNT}${PUBKEY_PATH}"
+    local ID_ENC="${BOOT_MNT}${ID_ENC_PATH}"
+    local ENCK="${BOOT_MNT}${ENCK_PATH}"
+
+    local SWAP_DEV="/dev/disk/by-partuuid/${SWAP_PARTUUID}"
+
+    open_with_key() {
+        local KEYFILE="$1"
+        local MODE="${2:-rw}"
+        if [ "$MODE" = "ro" ]; then
+            cryptsetup luksOpen "$SWAP_DEV" "$MAP_NAME" --key-file "$KEYFILE" --readonly
+        else
+            cryptsetup luksOpen "$SWAP_DEV" "$MAP_NAME" --key-file "$KEYFILE"
+        fi
+    }
+
+    drop_to_shell() {
+        echo
+        echo "[swapgate] Operation failed: opening the debug console."
+        echo "[swapgate] You can remove the cookie and cold-boot, or fix keys."
+        echo "  Cookie path: ${COOKIE}"
+        echo "  Enc(K) path: ${ENCK}"
+        echo "  Identity:    ${ID_ENC}"
+        echo "  Rundir:      /run/swapgate/"
+        echo
+        echo "Type 'exit' to continue a cold boot, or use the shell to intervene."
+        sh -i </dev/console >/dev/console 2>&1
+    }
+
+    # Reformat, with safety checks
+    reformat_luks() {
+        local KEYFILE="$1"
+
+        if [ "${DANGEROUS_SKIP_SAFETY_CHECKS_IM_NOT_A_DUMMY:-0}" = "0" ]; then
+            local RESOLVED="$(readlink -f "$SWAP_DEV")" || RESOLVED=""
+            [ -b "$RESOLVED" ] || { echo "[swapgate] ERROR: $SWAP_DEV not a block device"; return 1; }
+
+            # Must be a partition (TYPE=part)
+            if [ "$(lsblk -no TYPE "$RESOLVED")" != "part" ]; then
+                echo "[swapgate] ERROR: $RESOLVED is not a partition (won't format)."
+                return 1
+            fi
+
+            # Must match the configured PARTUUID 1:1
+            local CUR_PUUID="$(lsblk -no PARTUUID "$RESOLVED" 2>/dev/null || true)"
+            if [ "$CUR_PUUID" != "$SWAP_PARTUUID" ]; then
+                echo "[swapgate] ERROR: PARTUUID mismatch ($CUR_PUUID != $SWAP_PARTUUID)."
+                return 1
+            fi
+
+            # Try to verify it looks like a Swap partition (GPT)
+            local CUR_PTYPE="$(lsblk -no PARTTYPE "$RESOLVED" 2>/dev/null || true)"
+            if [ "$CUR_PTYPE" != "0657fd6d-a4ab-43c4-84e5-0933c84b4f4f" ]; then
+                if [ "${ALLOW_NONSWAP_PARTTYPE:-0}" != "1" ]; then
+                    echo "[swapgate] ERROR: PARTTYPE=$CUR_PTYPE not swap GUID; set ALLOW_NONSWAP_PARTTYPE=1 to bypass."
+                    return 1
+                fi
+            fi
+
+            # Must already be LUKS (protects data if you mispoint)
+            if ! cryptsetup isLuks "$RESOLVED" 2>/dev/null; then
+                echo "[swapgate] ERROR: $RESOLVED is not LUKS; will not format."
+                return 1
+            fi
+
+            # Must not be mounted / in use
+            if lsblk -no MOUNTPOINT "$RESOLVED" | grep -q .; then
+                echo "[swapgate] ERROR: $RESOLVED is mounted; will not format."
+                return 1
+            fi
+        fi
+
+        cryptsetup luksFormat "$RESOLVED" "$KEYFILE" \
+            --type luks2 --pbkdf pbkdf2 --pbkdf-force-iterations 1000 --keyfile-size 32 --batch-mode
+    }
+
+    if [ -f "$COOKIE" ]; then
+        echo "[swapgate] Resume cookie present -> resume path"
+
+        # Decrypt the encrypted identity (prompts for passphrase on TTY)
+        mkdir -p /run/swapgate
+        openssl pkeyutl -decrypt \
+            -inkey "$ID_ENC" \
+            -pkeyopt rsa_padding_mode:oaep \
+            -pkeyopt rsa_oaep_md:sha256 \
+            -pkeyopt rsa_mgf1_md:sha256 \
+            -in "$ENCK" -out /run/swapgate/swap.key || {
+                echo "[swapgate_age] ERROR: unwrap K failed"
+                drop_to_shell
+                umount "$BOOT_MNT"
+                return 0
+            }
+
+        # Open LUKS with K (do NOT format!)
+        if ! open_with_key /run/swapgate/swap.key ro; then
+            echo "[swapgate] ERROR: cryptsetup open failed."
+            drop_to_shell
+            umount "$BOOT_MNT"
+            rm -f /run/swapgate/swap.key
+            return 0
+        fi
+
+        # Do not swapon here: let the 'resume' hook hand it to the kernel.
+        # After kernel resumes, normal boot continues and swap will be on.
+        umount "$BOOT_MNT"
+        rm -f /run/swapgate/swap.key
+        echo "[swapgate] Resume device opened at /dev/mapper/${MAP_NAME}"
+        return 0
+    fi
+
+    echo "[swapgate] No cookie -> normal boot path (rotate K)"
+
+    # Generate fresh random K
+    mkdir -p /run/swapgate
+    dd if=/dev/urandom of=/run/swapgate/swap.key bs=32 count=1 2>/dev/null
+
+    # Format LUKS2 swap with K (fast PBKDF for keyslot since it's machine-held)
+    if ! reformat_luks /run/swapgate/swap.key; then
+        echo "[swapgate] ERROR: Failed to reformat swap LUKS partition."
+        drop_to_shell
+        return 0
+    fi
+
+    # Encrypt K with public key and write to ESP (need rw remount just for this write)
+    mount -o remount,rw "$BOOT_MNT" || true
+    openssl pkeyutl -encrypt -pubin \
+        -inkey "$PUBKEY" \
+        -pkeyopt rsa_padding_mode:oaep \
+        -pkeyopt rsa_oaep_md:sha256 \
+        -pkeyopt rsa_mgf1_md:sha256 \
+        -in /run/swapgate/swap.key \
+        -out "$ENCK" || {
+            echo "[swapgate] ERROR: Failed to write Enc(K)."
+            drop_to_shell;
+            umount "$BOOT_MNT";
+            return 0;
+        }
+    sync
+    mount -o remount,ro "$BOOT_MNT" || true
+
+    # Open LUKS and create/activate swap
+    if ! open_with_key /run/swapgate/swap.key; then
+        echo "[swapgate] ERROR: cryptsetup open failed after format."
+        drop_to_shell
+        umount "$BOOT_MNT"
+        rm -f /run/swapgate/swap.key
+        return 0
+    fi
+
+    rm -f /run/swapgate/swap.key
+
+    mkswap -f "/dev/mapper/${MAP_NAME}" >/dev/null
+    swapon "/dev/mapper/${MAP_NAME}"
+
+    umount "$BOOT_MNT"
+    echo "[swapgate] Fresh swap online at /dev/mapper/${MAP_NAME}"
+}
+
