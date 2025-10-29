@@ -27,6 +27,11 @@ install:
 	install -d $(SLEEP_DIR)
 	install -D -m 0755 systemd-sleep-hook/99-resume-cookie.sh $(SLEEP_DIR)/99-resume-cookie
 
+.PHONY: install-nouveau-workaround
+install-nouveau-workaround:
+	install -d $(SLEEP_DIR)
+	install -D -m 0755 systemd-sleep-hook/99-nouveau-workaround.sh $(SLEEP_DIR)/99-nouveau-workaround
+
 .PHONY: uninstall
 uninstall:
 	rm -f $(ETC_DIR)/swapgate.conf

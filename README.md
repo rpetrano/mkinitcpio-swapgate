@@ -48,6 +48,7 @@ There are existing solutions for dracut initramfs system, but none that are trus
 │ └── install/swapgate # mkinitcpio install script (adds bins/modules)
 ├── systemd-sleep-hook/
 │ └── 99-resume-cookie.sh # writes/removes /boot cookie on hibernate/resume
+│ └── 99-nouveau-workaround.sh # fixes restore issue on nvidia and swayvm with nouveau drivers
 ├── setup.sh # generates RSA keys & initial wrapped key
 ├── test.sh # QEMU test harness (sandbox disk/ESP)
 └── Makefile # install & test targets
@@ -142,6 +143,7 @@ HOOKS=(base udev autodetect microcode modconf kms keyboard keymap consolefont bl
 ```
 
 # Rebuild the initramfs you actually boot (example for linux)
+```sh
 sudo mkinitcpio -p linux
 ```
 In that case even if the boot fails for default boot, the lts images will still work.
@@ -187,5 +189,29 @@ Please not that by default the fallback image is used for testing because the au
 sudo make uninstall
 sudo mkinitcpio -p linux
 sudo rm -fr /boot/rsa/ /boot/resume.cookie
+```
+
+# Nvidia + Wayland workaround script
+On wayland with nouveau drivers the resume may crash compositor, so we use a workaround to disable the output in sway before hibernation and to enable the output after the resume has completed, via another systemd-sleep hook.
+
+Change these values in the file `systemd-sleep-hook/99-nouveau-workaround.sh`:
+```sh
+# --- ADJUST THESE IF NEEDED ---
+USER_NAME="icewootra"
+GPU_PCI="0000:01:00.0"
+GPU_DRV="nouveau"
+UNLOAD_NOUVEAU="no"
+# ------------------------------
+```
+
+To install, use:
+
+```sh
+sudo make install-noveau-workaround
+```
+
+And to apply it, just do:
+```sh
+systemctl daemon-reload
 ```
 
