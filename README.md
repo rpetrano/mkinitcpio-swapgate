@@ -192,15 +192,19 @@ sudo rm -fr /boot/rsa/ /boot/resume.cookie
 ```
 
 # Nvidia + Wayland workaround script
-On wayland with nouveau drivers the resume may crash compositor, so we use a workaround to disable the output in sway before hibernation and to enable the output after the resume has completed, via another systemd-sleep hook.
+On wayland with nouveau drivers the resume may crash compositor, so we use a workaround to disable the output in sway before hibernation and to enable the output after the resume has completed.
 
-Change these values in the file `systemd-sleep-hook/99-nouveau-workaround.sh`:
+To do this, we have to do two things:
+* nouveau-workaround/bin/nouveau-hibernation.sh -> a script to detect which screen is used by our nvidia card, and shut it down or bring it up as requested
+* nouveau-workaround/src/main.rs -> a daemon in rust which inhibits the suspend action of a system just as long as we take down the second screen. It works by using logind dbus interface.
+
+
+To build, install rust and run: `make nouveau-workaround`
+
+Change this value in the file `systemd-sleep-hook/99-nouveau-workaround.sh`:
 ```sh
 # --- ADJUST THESE IF NEEDED ---
-USER_NAME="icewootra"
 GPU_PCI="0000:01:00.0"
-GPU_DRV="nouveau"
-UNLOAD_NOUVEAU="no"
 # ------------------------------
 ```
 
@@ -212,6 +216,13 @@ sudo make install-noveau-workaround
 
 And to apply it, just do:
 ```sh
-systemctl daemon-reload
+systemctl --user daemon-reload
+systemctl --user enable --now nouveau-sleep-daemon.service
+```
+
+To uninstall, use:
+
+```sh
+sudo make uninstall-noveau-workaround
 ```
 
