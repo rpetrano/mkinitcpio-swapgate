@@ -3,24 +3,27 @@ set -euo pipefail
 
 # --- ADJUST THESE IF NEEDED ---
 GPU_PCI="0000:01:00.0"
+# The following settings are in seconds, please don't add any prefixes, just numbers
+# PRE_SLEEP_DELAY will be capped by logind in /etc/systemd/logind.conf -> setting InhibitDelayMaxSec
 PRE_SLEEP_DELAY=2
 POST_SOCKET_LOOP_DELAY=0.2
-POST_SOCKET_LOOP_N=10
+POST_SOCKET_LOOP_MAXN=10
 POST_SLEEP_DELAY=2
 # ------------------------------
 
 loop_find_swaysock() {
   local i=0
-  while [ "$i" -lt "$POST_SOCKET_LOOP_N" ]; do
-    find_swaysock -q || {
+  while [ "$i" -lt "$POST_SOCKET_LOOP_MAXN" ]; do
+    swaysock=$(find_swaysock -q) && SWAYSOCK="$swaysock" swaymsg -t get_version >/dev/null 2>&1 || {
       i=$((i+1))
       sleep "$POST_SOCKET_LOOP_DELAY"
       continue
     }
+    echo "$swaysock"
     return
   done
-  local _time="$(bc -ql <<< "scale=3; $POST_SOCKET_LOOP_N * $POST_SOCKET_LOOP_DELAY")"
-  logger "[nouveau-park] can't find sway sock after $POST_SOCKET_LOOP_N tries ($_time seconds)"
+  local _time="$(bc -ql <<< "scale=3; $POST_SOCKET_LOOP_MAXN * $POST_SOCKET_LOOP_DELAY")"
+  logger "[nouveau-park] can't find sway sock after $POST_SOCKET_LOOP_MAXN tries ($_time seconds)"
   return 1
 }
 
